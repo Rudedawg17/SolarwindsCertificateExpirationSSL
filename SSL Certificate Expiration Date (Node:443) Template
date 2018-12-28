@@ -7,9 +7,13 @@
 ####### ONLY VARIABLE YOU NEED TO CHANGE  #######
 $hostname = <enter your solarwinds hostname here>
 
+## Edit this line to reflect the name of your application template ##
+$swisQuery = "SELECT ApplicationID FROM Orion.APM.Application WHERE NodeID=$NodeID AND Name LIKE 'SSL Certificate Expiration Date (Node:$($port))'"
 
 
-
+#################################################
+#######            Main Script            #######
+#################################################
 
 Add-PSSnapin swissnapin
 
@@ -72,7 +76,7 @@ else {
 
     #Variables
     $swis = Connect-Swis -host $hostname -Trusted
-    $AppID = Get-SwisData $swis "SELECT ApplicationID FROM Orion.APM.Application WHERE NodeID=$NodeID AND Name LIKE 'SSL Certificate Expiration Date (Node:$($port))'"
+    $AppID = Get-SwisData $swis $swisQuery
     $swisuri = "swis://$($hostname)/Orion/Orion.Nodes/NodeID=$($NodeID)/Applications/ApplicationID=$($AppID)/CustomProperties"
 
 
