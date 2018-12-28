@@ -1,0 +1,118 @@
+#Used my baseline here: https://thwack.solarwinds.com/message/300039#300039
+# 
+#Posted this script here: https://thwack.solarwinds.com/docs/DOC-188533
+#Modified by Thwack user: Chad.Every Date: 2016/04/21
+#
+
+####### ONLY VARIABLE YOU NEED TO CHANGE  #######
+$hostname = <enter your solarwinds hostname here>
+
+
+
+
+
+Add-PSSnapin swissnapin
+
+# Since the certificate in Orion for SWIS is self-signed we'll need this to ignore it.
+try{
+add-type @"
+    using System.Net;
+    using System.Security.Cryptography.X509Certificates;
+    public class TrustAllCertsPolicy : ICertificatePolicy {
+        public bool CheckValidationResult(
+            ServicePoint srvPoint, X509Certificate certificate,
+            WebRequest request, int certificateProblem) {
+            return true;
+        }
+    }
+"@
+[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+}catch{}
+
+#collect Variables
+$computerName = $($args[0])
+$port = $($args[1])
+$NodeID = $($args[2])
+
+#Create a TCP Socket to the computer and a port number
+$tcpsocket = New-Object Net.Sockets.TcpClient($computerName, $port) 
+
+#test if the socket got connected
+if (!$tcpsocket) {
+    Write-Error "Error Opening Connection: $port on $computername Unreachable"
+    $ExitCode = 1
+}
+else {
+
+    #Socket Got connected get the tcp stream ready to read the certificate
+    $tcpstream = $tcpsocket.GetStream()
+
+    #Create an SSL Connection 
+    #$sslStream = New-Object System.Net.Security.SslStream($tcpstream,$false)
+    $sslStream = New-Object System.Net.Security.SslStream($tcpstream, $false, {
+            param($sender, $certificate, $chain, $sslPolicyErrors) 
+            return $true
+        })
+
+    #Force the SSL Connection to send us the certificate
+    $sslStream.AuthenticateAsClient($computerName) 
+
+    #Read the certificate
+    $certinfo = New-Object system.security.cryptography.x509certificates.x509certificate2($sslStream.RemoteCertificate)
+    $certExp = $certinfo.GetExpirationDateString()
+    $websiteName = $certinfo.Subject.split(",", 2)[0].Replace("CN=", "")
+
+
+
+    $todayDate = Get-Date
+    $daysRemaining = (New-TimeSpan -start $todayDate -End $certExp).Days
+
+
+
+
+    #Variables
+    $swis = Connect-Swis -host $hostname -Trusted
+    $AppID = Get-SwisData $swis "SELECT ApplicationID FROM Orion.APM.Application WHERE NodeID=$NodeID AND Name LIKE 'SSL Certificate Expiration Date (Node:$($port))'"
+    $swisuri = "swis://$($hostname)/Orion/Orion.Nodes/NodeID=$($NodeID)/Applications/ApplicationID=$($AppID)/CustomProperties"
+
+
+    # There are Application Custom Property (Text)
+    $var1 = $daysRemaining.tostring()
+    $var2 = $certExp.tostring()
+    $var3 = $websiteName.tostring()
+    $customProperties = @{
+        "CertificateDaysRemaining" = "$var1";
+        "CertificateExpirationDate" = "$var2";
+        "CertificateSubjectName" = "$var3"
+    }
+    $swisuri = "swis://$($hostname)/Orion/Orion.Nodes/NodeID=$($NodeID)/Applications/ApplicationID=$($AppID)/CustomProperties"
+
+
+    # Update the application custom properties
+    Set-SwisObject $Swis -Uri $swisuri -properties $customProperties
+
+
+    # Output Section
+    if ($daysRemaining -gt 90) {
+        Write-Host "Statistic.DaysRemaining:"$daysRemaining
+        Write-Host "Message.DaysRemaining: Cert for $computerName : $port expires on $certExp, Subject: $websiteName, There are $daysRemaining days remaining."
+        $ExitCode = 0
+    }
+    elseif (($daysRemaining -lt 90) -and ($daysRemaining -gt 30)) {
+        Write-Host "Statistic.DaysRemaining:"$daysRemaining
+        Write-Host "Message.DaysRemaining: WARNING - Cert for $computerName : $port expires on $certExp, Subject: $websiteName, There are $daysRemaining days remaining."
+        $ExitCode = 0
+    }
+    elseif (($daysRemaining -lt 30) -and ($daysRemaining -ge 0)) {
+        Write-Host "Statistic.DaysRemaining:"$daysRemaining
+        Write-Host "Message.DaysRemaining: CRITICAL - Cert for $computerName : $port expires on $certExp, Subject: $websiteName, There are $daysRemaining days remaining."
+        $ExitCode = 0
+    }
+    else {
+        Write-Host "Statistic.DaysRemaining:"$daysRemaining
+        Write-Host "Message.DaysRemaining: DOWN - Cert for $computerName : $port expired on $certExp, Subject: $websiteName, This expired $daysRemaining days ago."
+        $ExitCode = 0
+    }
+}
+
+Exit $ExitCode
